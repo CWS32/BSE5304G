@@ -1,0 +1,289 @@
+# BSE5304G
+rm(list=objects())
+setwd("~")
+laburl="https://raw.githubusercontent.com/vtdrfuka/BSE5304_2022/main/Lab05/lab05sol"
+download.file(laburl,"Lab05Sol.R")
+file.edit("Lab05Sol.R")
+# Run this script to get all the base data
+#
+# From last week calibration
+TMWBnew=TMWBmodel(TMWB=TMWB,fcres=.3,SFTmp = 11,Tlag = .5,AWCval = 100)
+##############################################################################################
+#####Now let make CN model
+#########################################################
+######HW 1 , WE want to calibrate CNmodel to see what is the 
+#            best value for IaFrac, let's have some fun
+#            and calibrate it for CNavg as well :))
+# And we want to optimize a CNmodel but how?!?!
+CNmodeldf=modeldata
+?optimize
+
+f <- function (x) {
+  CNmodelnew=CNmodel(CNmodeldf =CNmodeldf,CNavg = x)
+  NSE(CNmodelnew$Qmm,CNmodelnew$Qpred)  
+}
+optimize(f, c(35,99), tol = 0.0001,maximum = TRUE)$maximum
+
+# But if we want to optimize multiple parameters? Someone must have done 
+# this before?!?!
+?DEoptim
+
+#f <- function (x) {
+  #CNopt=x[1]
+  #IaOpt=x[2]
+  #CNmodelnew=CNmodel(CNmodeldf =CNmodeldf,CNavg = CNopt,IaFrac = IaOpt)
+  #return (1-NSE(CNmodelnew$Qmm,CNmodelnew$Qpred)) 
+#}
+
+f <- function(x) {
+  CNopt=x[1]
+  Iaopt=x[2]
+  DAWCopt=x[3]
+  zopt=x[4]
+  fcresopt= x[5]
+  CNmodelnew=CNmodel(CNmodeldf =CNmodeldf,CNavg =CNopt,IaFrac=Iaopt,fnc_slope=0, 
+                     fnc_aspect=0,func_DAWC=DAWCopt,func_z=zopt,fnc_fcres=fcresopt)
+  return (1-NSE(CNmodelnew$Qmm,CNmodelnew$Qpred)) 
+}
+lower <- c(35,.01,.2,10,.1) #include others
+upper <- c(99,.25,.4,2000,.5) #Include others 
+
+## run DEoptim and set a seed first for replicability
+set.seed(1234)
+DEoptim(f, lower, upper,control = DEoptim.control(itermax=40))
+
+q <- function(x) {
+  fcresopt= x[1]
+  SFTopt= x[2]
+  Tlagopt= x[3]
+  AWCopt= x[4]
+  TMWBnew=TMWBmodel(TMWB=TMWB,fcres=fcresopt,SFTmp = SFTopt,Tlag = Tlagopt,AWCval = AWCopt)
+  return (1-NSE(TMWBnew$Qmm,TMWBnew$Qpred)) 
+}
+
+lower1 <- c(.1,-5,0,150)
+upper1 <- c(.5,5,1,350)
+
+set.seed(1234)
+DEoptim(q,lower1,upper1,control=DEoptim.control(itermax=40))
+
+# So, what does this tell us? Not much goes in so Ia is much 
+# lower than original CN model, and CN is high, so very urban
+# [20,] 96.72287 0.01000807
+
+#### NSE=0.52
+CNmodelnew=CNmodel(CNmodeldf =CNmodeldf,CNavg =94.51,IaFrac=0.02,fnc_slope=0, 
+                   fnc_aspect=0,func_DAWC=.40,func_z=1979.38,fnc_fcres=.42)
+
+TMWBnew=TMWBmodel(TMWB=TMWB,fcres=.31,SFTmp = 4.46,Tlag = .25,AWCval = 150.01)
+
+###############################################
+####HW 2 plotting
+#######################################
+NSE(TMWBnew$Qmm,TMWBnew$Qpred)
+NSE(CNmodelnew$Qmm,CNmodelnew$Qpred)
+ggplot() +
+  geom_line(data=TMWBnew,aes(x=date, y = Qmm,colour="Qmm")) +
+  geom_line(data=TMWBnew,aes(x=date, y = Qpred,colour="Qpred_TMWB,NSE=0.31")) +
+  geom_line(data=CNmodelnew,aes(x=date, y = Qpred,colour="Qpred_CN,NSE=0.52")) +
+  labs(x = 'Date', y = 'Flow (mm)')+
+  scale_colour_manual("", 
+                      breaks = c("Qmm", "Qpred_TMWB,NSE=0.31", "Qpred_CN,NSE=0.52"),
+                      values = c("black", "blue","red"))+
+  theme(text = element_text(size = 10))+
+  ggtitle("Discharge Comparison between CN model 
+          and TMWB against Observed data")
+
+pacman::p_load(lubridate, data.table)
+BasinTMWB_JO=TMWBnew[(month(TMWBnew$date) > 5 
+                      & month(TMWBnew$date) < 11),]
+attach(BasinTMWB_JO)
+plot(dP,Qmm)
+detach(BasinTMWB_JO)
+
+(1000/85-10)*25.4   # our CN estimate in bold
+#[1] 44.82353
+(1000/50-10)*25.4   # our CN estimate in bold
+#[1] 254
+#
+# So we are going to visually "guestimate" that S should be somewhere between 
+# 45mm and 260mm… repeat plotting until your solution covers the 
+# largest Qmm vs dP event (upper right hand corner of plot). 
+# 
+# Assuming that (P-Ia) ~ dP, we can visually compare 
+attach(BasinTMWB_JO)
+plot(dP,Qmm)
+points(dP,dP^2/(dP+45),col="red")  # S guestimates in bold
+points(dP,dP^2/(dP+260),col="blue")# S guestimates in bold
+
+# Now perform a “Calibration” using our method from Lab3 and the NSE
+# as the “Objective Function”.  
+#
+# Vary S to maximize NSE using Eq. 4 of Lyon 2004 as our predictor of Q
+#   Qpred=dP^2/(dP+S)
+#
+NSE(Qmm,dP^2/(dP+260))
+
+NSE(Qmm,dP^2/(dP+45))
+
+#
+# Keep iterating until NSE is as high as you can get for your 
+# best estimate to S (Sest)
+#
+f <- function (x) {
+  Sest=x
+  NSE(Qmm,dP^2/(dP+Sest))
+}
+Sest= optimize(f, c(50,500), tol = 0.0001,maximum = TRUE)$maximum
+#Sest="WHAT?"
+plot(dP,Qmm)
+points(dP,dP^2/(dP+Sest),col="red") 
+########
+detach(BasinTMWB_JO)
+
+
+#
+# What is the optimum value of Sest and the corresponding NSE?
+#
+
+# Compare visual based (green) with “calibration” based (red) solutions
+
+#
+# We can now take our calculated S for the watershed, and use it to 
+# model VSA variable source areas runoff by distributing the CN over the TI 
+# Classes we created last lab using the method of Easton et. al 2008 (see 
+# equation 9 in  https://goo.gl/Y2nyBZ )
+#
+
+
+#
+# Here we take advantage of a library, data.table, which allows us 
+# to access values from lead/lag vectors through a shift() function 
+#
+# We will split into 5 VSA areas represented by 5 TI Classes
+nTIclass=5
+VSAsol=data.table(WetClass=seq(from=nTIclass,to=1),
+                  As=seq(1:nTIclass)*(1/nTIclass),Wetfrac=(1/nTIclass))
+VSAsol[,sSratio:=2*(sqrt(1-shift(As))-sqrt(1-As))/Wetfrac-1]
+#
+# Inspect what the previous command gives us, note it is just a fancy way of 
+# shifting the index of a vector in the VSAsol data frame 
+# using the data.table::shift() function.
+#
+VSAsol 
+#
+# Now fill in the missing value
+#
+VSAsol$sSratio[1]=2*(sqrt(1-0)-sqrt(1-VSAsol$As[1]))/VSAsol$Wetfrac[1]-1
+#
+# Inspect to confirm all values are filled
+#
+VSAsol
+#
+# Calculate TI Class localized sigma and Curve Number
+#
+VSAsol[,sigma:=Sest*sSratio]
+VSAsol[,CN:=25400/(sigma+254)]
+VSAsol
+plot(VSAsol$As,VSAsol$sigma)
+lines(VSAsol$As,VSAsol$sigma)
+plot(VSAsol$As,VSAsol$CN)
+lines(VSAsol$As,VSAsol$CN)
+
+# Use the CNmodel Function from last week, but set up 5 TI Classes instead
+# of 3 hillslope locations
+#
+#
+# Initialize the TI Class objects from top to bottom of slope
+TIC05=modeldata
+TIC04=modeldata
+TIC03=modeldata
+TIC02=modeldata
+TIC01=modeldata
+# For TIC05 CNavg=VSAsol$CN[1]
+TIC05 = CNmodel(CNmodeldf = TIC05, CNavg=VSAsol$CN[1],
+                func_DAWC=.3,IaFrac=0.05,
+                func_z=1000,fnc_fcres=0.43
+)
+
+# Scale reservoir coefficient between the .2-.5 given in class 
+# Same as lab 5, just call the CNmodel function with each of the 
+# TIClass objects and route Qpred to ExcessIn below
+#
+# First, let's look at the differences in flow for different CNs
+
+#
+# Repeat for TI Classes 1-4, start by initializing and complete the previous
+# initializations, and don't forget to route TI Class 1 to 2, 2 to 3, etc. 
+TIC04$P=TIC05$Excess+TIC04$P
+TIC04= CNmodel(CNmodeldf = TIC04, CNavg=VSAsol$CN[2],
+               func_DAWC=.3,IaFrac=0.05,
+               func_z=1000,fnc_fcres=0.419
+)
+TIC03$P=TIC04$Excess+TIC03$P
+TIC03= CNmodel(CNmodeldf = TIC03, CNavg=VSAsol$CN[3],
+               func_DAWC=.3,IaFrac=0.05,
+               func_z=1000,fnc_fcres=0.418
+)
+TIC02$P=TIC03$Excess+TIC02$P
+TIC02= CNmodel(CNmodeldf = TIC02, CNavg=VSAsol$CN[4],
+               func_DAWC=.3,IaFrac=0.05,
+               func_z=1000,fnc_fcres=0.417
+)
+TIC01$P=TIC02$Excess+TIC01$P
+# Repeat aboves initialization for TIC04 here, and follow through to TIC01
+# Run CNmodel to get a solution for the watershed outlet.
+TIC01= CNmodel(CNmodeldf = TIC01, CNavg=VSAsol$CN[5],
+               func_DAWC=.3,IaFrac=0.05,
+               func_z=1000,fnc_fcres=0.416
+)
+#Q Graph
+ggplot() +
+  geom_line(aes(x=TIC05$date, y =TIC05$Qpred,colour="TIC05")) +
+  geom_line(aes(x=TIC04$date, y =TIC04$Qpred/2,colour="TIC04")) +
+  geom_line(aes(x=TIC03$date, y =TIC03$Qpred/3,colour="TIC03")) +
+  geom_line(aes(x=TIC02$date, y =TIC02$Qpred/4,colour="TIC02")) +
+  geom_line(aes(x=TIC01$date, y =(TIC01$Qpred/5),colour="TIC01")) +
+  labs(x = 'Date', y = 'Flow (mm)')+
+  scale_colour_manual("", 
+                      breaks = c("TIC05", "TIC04", "TIC03","TIC02","TIC01"),
+                      values = c("black", "blue","red","green","pink"))+
+  theme(text = element_text(size = 10))+
+  ggtitle("Discharge Comparison between TI Classes")
+
+#AW Graph
+ggplot() +
+  geom_line(aes(x=TIC05$date, y =TIC05$AW,colour="TIC05")) +
+  geom_line(aes(x=TIC04$date, y =TIC04$AW,colour="TIC04")) +
+  geom_line(aes(x=TIC03$date, y =TIC03$AW,colour="TIC03")) +
+  geom_line(aes(x=TIC02$date, y =TIC02$AW,colour="TIC02")) +
+  geom_line(aes(x=TIC01$date, y =TIC01$AW,colour="TIC01")) +
+  labs(x = 'Date', y = 'AW (mm)')+
+  scale_colour_manual("", 
+                      breaks = c("TIC05", "TIC04", "TIC03","TIC02","TIC01"),
+                      values = c("black", "blue","red","green","pink"))+
+  theme(text = element_text(size = 10))+
+  ggtitle("Available Water Comparison between TI Classes")
+#ET Graph
+ggplot() +
+  geom_line(aes(x=TIC05$date, y =TIC05$ET,colour="TIC05")) +
+  geom_line(aes(x=TIC04$date, y =TIC04$ET,colour="TIC04")) +
+  geom_line(aes(x=TIC03$date, y =TIC03$ET,colour="TIC03")) +
+  geom_line(aes(x=TIC02$date, y =TIC02$ET,colour="TIC02")) +
+  geom_line(aes(x=TIC01$date, y =TIC01$ET,colour="TIC01")) +
+  labs(x = 'Date', y = 'ET (mm)')+
+  scale_colour_manual("", 
+                      breaks = c("TIC05", "TIC04", "TIC03","TIC02","TIC01"),
+                      values = c("black", "blue","red","green","pink"))+
+  theme(text = element_text(size = 10))+
+  ggtitle("Actual ET Comparison between TI Classes")
+mean(TIC01$Qpred)
+mean(TIC02$Qpred)
+mean(TIC03$Qpred)
+mean(TIC04$Qpred)
+mean(TIC05$Qpred)
+
+
+
+max(TIC01$AW)
+min(TIC01$AW)
