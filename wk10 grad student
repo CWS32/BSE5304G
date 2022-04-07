@@ -1,0 +1,193 @@
+# BSE5304G
+
+##############################################
+# 0205551460 LICK RUN ABOVE PATTON AVENUE AT ROANOKE, VA
+##############################################
+make_usgs_gage_list=function(siteNo = "09422500",
+                             parameterCd = c("00060","00065"),
+                             start.date = "2017-05-01",  # Not frozen to not frozen
+                             end.date = "2017-11-01"    # to still not frozen
+){
+  
+  USGSlist=list()   # Organize the data in a nice list as in previous labs
+  USGSlist[["flowdata"]]<- readNWISuv(siteNumbers = siteNo,parameterCd = parameterCd,startDate = start.date,endDate = end.date)
+  head(USGSlist$flowdata)  # Note that we have 00060 and 00065...
+  #  agency_cd	site_no        	dateTime X_00060_00000 X_00060_00000_cd
+  #1  	USGS list 2017-05-01 04:00:00      	6.38            	A
+  #2  	USGS list 2017-05-01 04:05:00      	6.38            	A
+  #  X_00065_00000 X_00065_00000_cd tz_cd
+  #1      	2.74            	A   UTC
+  #2      	2.74            	A   UTC
+  #
+  # And of course we want to work in SI units so:
+  USGSlist$flowdata$depth_m=USGSlist$flowdata$X_00065_00000*0.3048
+  #USGSlist$flowdata$depth_m=USGSlist$flowdata$depth_m -min(USGSlist$flowdata$depth_m,na.rm = T)
+  # m/ft depth
+  USGSlist$flowdata$cms=USGSlist$flowdata$X_00060_00000*.02832
+  # m3/ft3 flow
+  #
+  # Let's add in the USGS gage site information to the list and inspect
+  USGSlist[["site"]]=readNWISsite(siteNo)
+  head(USGSlist$site)
+  class(USGSlist$site$dec_lat_va)
+  #
+  # Set the Manning Coefficient in the USGS Gage's Site Table
+  #
+  USGSlist$site$man_n=.035/1.49
+  #
+  # Create a SpatialPointsDataFrame out of the site dataframe in the USGS list
+  coordinates(USGSlist$site)=~dec_long_va+dec_lat_va
+  #
+  return(USGSlist)
+}
+
+USGS09423000=make_usgs_gage_list(siteNo = "09423000")
+USGS09419545=make_usgs_gage_list(siteNo = "09419545")
+USGS09419910=make_usgs_gage_list(siteNo = "09419910")
+
+ab_ll=rbind(USGS09423000$site,
+            USGS09419545$site,
+            USGS09419910$site)
+class(ab_ll)
+ab_ll@proj4string
+proj4_utm = paste0("+proj=utm +zone=",
+                   trunc((180+coordinates(USGS09423000$site)[1])/6+1), 
+                   " +datum=WGS84 +units=m +no_defs")
+print(proj4_utm)
+# Lat/Lon (_ll) is much easier!
+proj4_ll = "+proj=longlat"
+crs_ll=CRS(proj4_ll)
+crs_utm=CRS(proj4_utm)
+proj4string(ab_ll)=proj4_ll
+ab_utm=spTransform(ab_ll,crs_utm)
+ab_utm@coords
+mydem=get_aws_terrain(locations=ab_utm@coords, 
+                      z = 5, prj = proj4_utm,expand=1)
+#
+# Lets plot the DEM and the gage locations so we can guess 
+# what gages connect with what gages
+#
+plot(mydem)
+plot(ab_utm,add=T)
+text(ab_utm, labels=ab_utm@data$site_no, cex=0.6, font=2,pos=1)
+# From Lab02, I know I can get an overview of streams with the 
+# USGS H
+url="https://prd-tnm.s3.amazonaws.com/StagedProducts/Hydrography/NHD/HU8/HighResolution/Shape/NHD_H_15030101_HU8_Shape.zip"
+curl_download(url,"NHD_H_15030101_HU8_Shape.zip")
+unzip("NHD_H_15030101_HU8_Shape.zip",exdir="03010101")
+streams=readOGR("15030101/Shape/NHDFlowline.dbf")
+streams_utm=spTransform(streams,crs_utm)
+plot(streams_utm,col="blue",add=T)
+zoom(mydem)
+
+
+
+############### START CHANGING/COPYING AND MODIFYING CODE HERE ##################
+
+# A quick readthrough of the Example 1: Hiking around Maunga Whau
+# in the package vignette. 
+# vignette("Overview", package = "gdistance")
+# Set the starting and ending locations
+# determine the river reach length and slope using the gdistance package.
+#
+A=SpatialPoints(USGS09419545$site)# Up gradient site Lick Run
+B=SpatialPoints(USGS09423000$site) # Down gradient site ROA River atNiagara
+proj4string(A)=proj4_ll
+proj4string(B)=proj4_ll
+A_utm=spTransform(A,crs_utm)
+B_utm=spTransform(B,crs_utm)
+# Cut the DEM down to a more manageable size
+cropmydem=raster::crop(mydem,raster::extend(extent(ab_utm),6000))
+cropmydem=raster::trim(cropmydem)
+cropmydem=cropmydem*1000.0
+plot(cropmydem)
+plot(ab_utm,add=T)
+# Set up the weighting functions
+altDiff <- function(x){x[2] - x[1]}
+hd <- transition(cropmydem, altDiff, 8, symm=FALSE)
+slope <- geoCorrection(hd)
+adj <- raster::adjacent(cropmydem, cells=1:ncell(cropmydem), pairs=TRUE, directions=8)
+speed <- slope
+speed[adj] <- 6 * exp(-3.5 * abs(slope[adj] + 0.05))
+Conductance <- geoCorrection(speed)
+# Find and plot the flow path
+AtoB <- shortestPath(Conductance, A_utm, B_utm, output="SpatialLines")
+plot(AtoB,add=T)
+plot(streams_utm,col="blue",add=T)
+plot(AtoB,add=T)
+SpatialLinesLengths(AtoB)
+USGS09419545$site$L=SpatialLinesLengths(AtoB) # km to m
+USGS09419545$site$L # reach length in m
+#
+#
+# Getting slope, we will extract the slope for points A and B from the DEM and # divide the difference by the length in m, this gives us a much better 
+# estimate of slope than taking the point slopes at the gage site
+#
+USGS09419545$site$slope=(raster::extract(mydem,A_utm)-
+                                  raster::extract(mydem,B_utm))/USGS09419545$site$L
+USGS09419545$site$slope
+
+
+# So now we have flow depth (y "$depth_m"), manning's n ("$man_n"), Q ("$cms"), and slope ("$slope") rearrange to solve for B
+# B=(n*Q)/(y^(5/3)*sqrt(So))
+USGS09419545$flowdata$B=(USGS09419545$site$man_n*USGS09419545$flowdata$cms)/
+  (USGS09419545$flowdata$depth_m^(5/3)*sqrt(USGS09419545$site$slope))
+head(USGS09419545$flowdata)
+#  agency_cd	site_no        	dateTime X_00060_00000 X_00060_00000_cd
+#1  	USGS 05267000 2017-05-01 04:00:00      	6.38            	A
+#2  	USGS 05267000 2017-05-01 04:05:00      	6.38            	A
+#  X_00065_00000 X_00065_00000_cd tz_cd   	cms  depth_m    	B
+#1      	2.74            	A   UTC 0.1806816 0.835152 0.103032
+#2      	2.74            	A   UTC 0.1806816 0.835152 0.103032
+#
+# Lets look at how B changes with flow.    
+plot(USGS09419545$flowdata$dateTime,USGS09419545$flowdata$B, main="LICK RUN TO ROANOKE RIVER AT NIAGARA, VA")
+# Does this seem reasonable (...like order of magnitude reasonable)? You can 
+# perform a quick and dirty check using google earth and measuring the channel 
+# width in a few places.
+#
+plot(USGS09419545$flowdata$cms,USGS09419545$flowdata$depth_m+.4, 
+     xlab = "Flow (cms)",ylab = "Depth (m)",
+     main="LICK RUN TO ROANOKE RIVER AT NIAGARA, VA")
+
+
+# ck
+# USGS09419545$flowdata$ck = ???
+# ANS
+USGS09419545$flowdata$ck =
+  5/3*sqrt(USGS09419545$site$slope)/USGS09419545$site$man_n*
+  (USGS09419545$flowdata$depth_m^(2/3))
+# USGS09419545$flowdata$dt = ???
+USGS09419545$flowdata$dt =
+  USGS09419545$site$L/USGS09419545$flowdata$ck
+
+plot(USGS09419545$flowdata$dateTime,USGS09419545$flowdata$dt)
+USGS09419545$flowdata$outTime=USGS09419545$flowdata$dateTime+
+  USGS09419545$flowdata$dt
+
+# Find beginning of  Waves
+USGS09419545$flowdata$newwave=
+  USGS09419545$flowdata$cms *1.03 <
+  data.table::shift(USGS09419545$flowdata$cms)
+summary(USGS09419545$flowdata$newwave)
+# Add plot of the point found
+len=length(USGS09419545$flowdata$newwave)
+USGS09419545$flowdata$newwave[is.na(USGS09419545$flowdata$newwave)]=F
+# Removes repeated finds by going through loop backwords
+for (i in seq(len,2)){
+  print(i)
+  if(USGS09419545$flowdata$newwave[i]==T &
+     USGS09419545$flowdata$newwave[i-1]==T){
+    USGS09419545$flowdata$newwave[i]=F
+  }
+}
+plot(USGS09419545$flowdata$dateTime,USGS09419545$flowdata$cms,type="l")
+points(USGS09419545$flowdata$dateTime[USGS09419545$flowdata$newwave],
+       USGS09419545$flowdata$cms[USGS09419545$flowdata$newwave],col=2)
+
+# Find the time locations where waves begin
+which(USGS09419545$flowdata$newwave == TRUE)
+plot(USGS09419545$flowdata$dateTime,USGS09419545$flowdata$cms,
+     type="l",xlim=c(USGS09419545$flowdata$dateTime[2301],
+                     USGS09419545$flowdata$dateTime[2301+200]),main="Gage Flow over Time for USGS09419545", xlab='Date',ylab="Time")
+lines(USGS09419545$flowdata$outTime,USGS09419545$flowdata$cms,col=2)
